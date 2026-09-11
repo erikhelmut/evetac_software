@@ -47,6 +47,9 @@ Visualizer keys: `q`/Esc quit · space pause display · `m` polarity/count view 
 (latest frame / 50 / 200 / 1000 ms) · `c` clear plots · `h` help.
 Tracking mode only: `t` toggle tracking · `r` current dots → reference · `s` store calibration · `+`/`-` arrow gain.
 
+`s` writes `calibration/calibrations/<loaded name>_<date>_<time>.pkl` like the ROS service
+`/store_current_dot_calibration`. Pass that file via `--calibration` next time.
+
 ### Raw mode
 
 `--raw` skips the dot tracker completely, so no calibration is needed. The noise filter is off
@@ -54,9 +57,6 @@ unless you pass `--noise-filter-ms`. The event image colors each pixel by its (l
 auto-ranged) event count, or by the dominant polarity (`m`).
 The "Events per 1 ms" plot bins event timestamps at 1 ms, so vibrations up to 500 Hz are
 visible even though frames arrive at 50 Hz. `read.py --raw --save x.npz` stores per-frame ON/OFF counts.
-
-`s` writes `calibration/calibrations/<loaded name>_<date>_<time>.pkl` like the ROS service
-`/store_current_dot_calibration`. Pass that file via `--calibration` next time.
 
 ## Python API
 
@@ -72,8 +72,8 @@ with EvetacReader(CameraSource(), rate_hz=50) as reader:
         frame.event_image(reader.resolution)   # uint8 image, 127 = no event
 ```
 
-`EvetacReader(source, track=False)` gives raw frames without a tracker. For non-blocking use (e.g. inside a control loop) call `reader.poll()` repeatedly; it returns a
-frame or `None`.
+`EvetacReader(source, track=False)` gives raw frames without a tracker. For non-blocking use
+(e.g. inside a control loop) call `reader.poll()` repeatedly; it returns a frame or `None`.
 
 ## Differences to the ROS version
 
