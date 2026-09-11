@@ -17,6 +17,7 @@ import os
 import time
 from collections import deque
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 
@@ -131,15 +132,16 @@ def _filter_to_numpy(events, noise_filter):
 @dataclass
 class EvetacFrame:
     index: int
+    start_timestamp: int  # sensor time [us] at the start of this frame
     timestamp: int  # sensor time [us] at the end of this frame
-    events: np.ndarray  # structured array (timestamp, x, y, polarity) of this frame, noise filtered
-    dots_xy: np.ndarray  # (N, 2) tracked dot centers (x, y) in pixels
-    initial_dots_xy: np.ndarray  # (N, 2) reference dot centers (x, y)
+    events: np.ndarray  # structured array (timestamp, x, y, polarity) of this frame
+    dots_xy: Optional[np.ndarray]  # (N, 2) tracked dot centers (x, y) in pixels, None without tracker
+    initial_dots_xy: Optional[np.ndarray]  # (N, 2) reference dot centers (x, y), None without tracker
     tracking_active: bool
 
     @property
     def displacement_xy(self):
-        return self.dots_xy - self.initial_dots_xy
+        return None if self.dots_xy is None else self.dots_xy - self.initial_dots_xy
 
     def event_image(self, resolution, gain=15):
         """uint8 (height, width) image, 127 = no event, like the ROS node's EvetacMsg.image.
@@ -161,6 +163,7 @@ class EvetacReader:
         rate_hz:     output frame rate. As in the original node the tracker runs on slices of
                      min(1000/rate_hz, 5) ms and frames are emitted every k slices.
         crop:        if < 0, only events with x < width + crop are used for tracking (original 'crop')
+        track:       False -> raw readout: no tracker is created and frames only carry events
         """
         self.source = source
         self.resolution = source.resolution
@@ -170,7 +173,7 @@ class EvetacReader:
         self.rate_hz = 1000 / (self.slice_ms * self.slices_per_frame)
         self.slice_us = self.slice_ms * 1000
 
-        self.tracker = DotTracker(calibration, slice_ms=self.slice_ms)
+        self.tracker = DotTracker(calibration, slice_ms=self.slice_ms) if track else None
         self.tracking_active = track
         self.crop_x = self.resolution[0] + crop if crop < 0 else None
 
@@ -212,7 +215,8 @@ class EvetacReader:
 
     def reset_reference(self):
         """Use the current dot locations as the new reference (store + reinit, in memory only)."""
-        self.tracker.initial_centers = self.tracker.centers.copy()
+        if self.tracker is not None:
+            self.tracker.initial_centers = self.tracker.centers.copy()
 
     # --------------------------------------------------------------- internals
     def _ingest(self, batch):
@@ -233,7 +237,7 @@ class EvetacReader:
 
     def _process_slice(self, events):
         t0 = time.perf_counter()
-        if self.tracking_active and len(events):
+        if self.tracker is not None and self.tracking_active and len(events):
             x, y = events["x"], events["y"]
             if self.crop_x is not None:
                 keep = x < self.crop_x
@@ -247,12 +251,14 @@ class EvetacReader:
         self._slice_count += 1
         if self._slice_count == self.slices_per_frame:
             ev = np.concatenate(self._frame_events)
+            tr = self.tracker
             self._pending.append(EvetacFrame(
                 index=self._frame_index,
+                start_timestamp=self._next_boundary - self.slice_us * self.slices_per_frame,
                 timestamp=self._next_boundary,
                 events=ev,
-                dots_xy=self.tracker.dots_xy.copy(),
-                initial_dots_xy=self.tracker.initial_dots_xy.copy(),
+                dots_xy=None if tr is None else tr.dots_xy.copy(),
+                initial_dots_xy=None if tr is None else tr.initial_dots_xy.copy(),
                 tracking_active=self.tracking_active,
             ))
             self._frame_index += 1
@@ -262,6 +268,8 @@ class EvetacReader:
 
 # -------------------------------------------------------------------------------------- CLI
 def make_source(args):
+    if args.noise_filter_ms is None:  # raw mode shows the unfiltered stream unless asked otherwise
+        args.noise_filter_ms = 0 if args.raw else 100
     if args.synthetic:
         from .synthetic import SyntheticSource
         return SyntheticSource(args.calibration, realtime=not args.fast)
@@ -281,6 +289,8 @@ def add_common_args(parser):
     parser.add_argument("--calibration", default=DEFAULT_CALIBRATION, help="dot calibration .pkl")
     parser.add_argument("--rate", type=float, default=50, help="output frame rate in Hz (default 50)")
     parser.add_argument("--crop", type=int, default=0, help="if < 0: ignore events with x >= width + crop for tracking")
-    parser.add_argument("--noise-filter-ms", type=int, default=100, help="background activity filter duration, 0 disables")
+    parser.add_argument("--raw", action="store_true", help="raw events only: no dot tracking, noise filter off by default")
+    parser.add_argument("--noise-filter-ms", type=int, default=None,
+                        help="background activity filter duration, 0 disables (default: 100, raw mode: 0)")
     parser.add_argument("--record", help="(camera only) also write raw events to this .aedat4 file")
     parser.add_argument("--fast", action="store_true", help="file/synthetic: process as fast as possible, not in real time")

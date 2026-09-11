@@ -5,6 +5,7 @@
     python -m evetac_noros.read --save run.npz --record run.aedat4
     python -m evetac_noros.read --file run.aedat4         # replay a recording
     python -m evetac_noros.read --synthetic               # no hardware needed
+    python -m evetac_noros.read --raw                     # events only, no tracking / noise filter
 """
 
 import argparse
@@ -18,7 +19,7 @@ def main():
     parser = argparse.ArgumentParser(description="Read out Evetac without ROS and print/save the signal.")
     add_common_args(parser)
     parser.add_argument("--list", action="store_true", help="list connected cameras and exit")
-    parser.add_argument("--save", help="save per-frame dot locations and event counts to this .npz")
+    parser.add_argument("--save", help="save per-frame event counts (and dot locations if tracking) to this .npz")
     parser.add_argument("--duration", type=float, default=0, help="stop after this many seconds of sensor time")
     args = parser.parse_args()
 
@@ -28,9 +29,10 @@ def main():
         return
 
     source = make_source(args)
-    reader = EvetacReader(source, args.calibration, rate_hz=args.rate, crop=args.crop)
+    reader = EvetacReader(source, args.calibration, rate_hz=args.rate, crop=args.crop, track=not args.raw)
     print(f"Source: {source.name}  resolution={source.resolution}  "
-          f"rate={reader.rate_hz:.1f} Hz (slice {reader.slice_ms} ms x {reader.slices_per_frame})")
+          f"rate={reader.rate_hz:.1f} Hz (slice {reader.slice_ms} ms x {reader.slices_per_frame})  "
+          f"tracking={'off (raw)' if args.raw else 'on'}  noise filter={args.noise_filter_ms} ms")
 
     log = {"timestamp": [], "dots_xy": [], "n_on": [], "n_off": []}
     t_first = None
@@ -42,23 +44,29 @@ def main():
                 n_off = len(frame.events) - n_on
                 if args.save:
                     log["timestamp"].append(frame.timestamp)
-                    log["dots_xy"].append(frame.dots_xy.astype(np.float32))
+                    if frame.dots_xy is not None:
+                        log["dots_xy"].append(frame.dots_xy.astype(np.float32))
                     log["n_on"].append(n_on)
                     log["n_off"].append(n_off)
                 if frame.index % max(1, int(reader.rate_hz)) == 0:
-                    disp = np.linalg.norm(frame.displacement_xy, axis=1)
-                    print(f"t={(frame.timestamp - t_first) / 1e6:7.2f}s  events/frame={len(frame.events):6d} "
-                          f"(on {n_on}, off {n_off})  mean|disp|={disp.mean():5.2f}px  max={disp.max():5.2f}px  "
-                          f"slow slices={reader.slow_slices}/{reader.total_slices}")
+                    line = (f"t={(frame.timestamp - t_first) / 1e6:7.2f}s  events/frame={len(frame.events):6d} "
+                            f"(on {n_on}, off {n_off})")
+                    if frame.dots_xy is not None:
+                        disp = np.linalg.norm(frame.displacement_xy, axis=1)
+                        line += (f"  mean|disp|={disp.mean():5.2f}px  max={disp.max():5.2f}px  "
+                                 f"slow slices={reader.slow_slices}/{reader.total_slices}")
+                    print(line)
                 if args.duration and (frame.timestamp - t_first) / 1e6 >= args.duration:
                     break
     except KeyboardInterrupt:
         pass
     finally:
         if args.save and log["timestamp"]:
-            np.savez_compressed(args.save, timestamp=np.array(log["timestamp"]), dots_xy=np.stack(log["dots_xy"]),
-                                initial_dots_xy=reader.tracker.initial_dots_xy, n_on=np.array(log["n_on"]),
-                                n_off=np.array(log["n_off"]), rate_hz=reader.rate_hz)
+            data = dict(timestamp=np.array(log["timestamp"]), n_on=np.array(log["n_on"]),
+                        n_off=np.array(log["n_off"]), rate_hz=reader.rate_hz)
+            if log["dots_xy"]:
+                data.update(dots_xy=np.stack(log["dots_xy"]), initial_dots_xy=reader.tracker.initial_dots_xy)
+            np.savez_compressed(args.save, **data)
             print("Saved", args.save)
 
 
