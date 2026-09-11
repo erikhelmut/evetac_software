@@ -1,0 +1,5 @@
+# conda create -n evetac python=3.12 && conda activate evetac && pip install -r evetac_noros/requirements.txt
+dv-processing==2.0.4
+numpy==2.5.3
+scipy==1.18.1
+opencv-python==5.0.0.93
